@@ -1,0 +1,19 @@
+# Build / fetch artifacts
+gdal-src/
+_gdal_sdist/
+gdal_libs/
+wheelhouse/
+dist/
+build/
+*.whl
+*.tar.gz
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# OS / editor
+.DS_Store
+*.swp

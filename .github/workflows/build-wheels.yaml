@@ -1,0 +1,215 @@
+name: Build and publish GDAL wheels
+
+# Builds standalone GDAL Python API (osgeo.gdal/ogr/osr) binary wheels for every
+# OS/arch + Python version, with libgdal and all C dependencies vendored in, so
+# `pip install gdal-wheels` Just Works with no system GDAL. Import package stays
+# `osgeo`, so it is a drop-in for the official (sdist-only) GDAL package.
+#
+# Pipeline (per platform):
+#   1. ci/fetch_gdal_src.sh        downloads GDAL's pip-ready sdist -> gdal-src/
+#                                  and renames the distribution GDAL -> gdal-wheels
+#   2. CIBW_BEFORE_ALL             builds libgdal + full C dep chain from source
+#                                  (Linux/macOS via ci/config.sh); Windows uses vcpkg
+#   3. cibuildwheel                builds gdal-src for each Python, linking libgdal
+#                                  via gdal-config (Linux/macOS) or INCLUDE/LIB (MSVC)
+#   4. repair                      auditwheel/delocate/delvewheel vendor the libs,
+#                                  then ci/patch_wheel.py injects gdal_data/proj_data
+#                                  and a runtime shim (sets GDAL_DATA/PROJ_DATA,
+#                                  registers the DLL dir on Windows)
+
+on:
+  workflow_dispatch:
+    inputs:
+      upload:
+        description: 'Upload wheels to PyPI? (0: no, 1: yes)'
+        required: true
+        default: '0'
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+concurrency:
+  # Use github.ref so a new push to a branch cancels its prior in-progress run.
+  # (head_ref is empty on push events, so the old fallback to run_id never
+  # deduped pushes.)
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Single source of truth for the GDAL version. Bump this to ship a new GDAL.
+  GDAL_VERSION: 3.13.0
+
+jobs:
+
+  # Pick the build matrix by trigger to control cost: push/PR iterate on Linux
+  # x86_64 only (1x billing), while releases / manual dispatch / a "[full ci]"
+  # commit run the full 6-platform matrix (macOS bills at 10x, Windows at 2x).
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.pick.outputs.matrix }}
+    steps:
+      - id: pick
+        shell: bash
+        run: |
+          FULL='[{"os":"ubuntu-22.04","arch":"x86_64"},{"os":"ubuntu-22.04-arm","arch":"aarch64"},{"os":"macos-15-intel","arch":"x86_64","cmake_osx_architectures":"x86_64","macos_deployment_target":"15.0"},{"os":"macos-14","arch":"arm64","cmake_osx_architectures":"arm64","macos_deployment_target":"14.0"},{"os":"windows-2022","arch":"AMD64","triplet":"x64-windows","msvc_arch":"x64"},{"os":"windows-11-arm","arch":"ARM64","triplet":"arm64-windows","msvc_arch":"ARM64"}]'
+          DEV='[{"os":"ubuntu-22.04","arch":"x86_64"}]'
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] || [ "${{ github.event_name }}" = "release" ] || printf '%s' "${{ github.event.head_commit.message }}" | grep -q '\[full ci\]'; then
+            echo "matrix=$FULL" >> "$GITHUB_OUTPUT"; echo "Selected FULL matrix"
+          else
+            echo "matrix=$DEV" >> "$GITHUB_OUTPUT"; echo "Selected DEV matrix (linux x86_64 only)"
+          fi
+
+  build_wheels:
+    needs: setup
+    name: ${{ matrix.arch }} wheels on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.setup.outputs.matrix) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Fetch GDAL sdist + rename to gdal-wheels
+        shell: bash
+        run: bash ci/fetch_gdal_src.sh "$GDAL_VERSION"
+
+      # --- Windows-only: provide libgdal via vcpkg (no from-source on MSVC) ---
+      - name: Activate MSVC
+        uses: ilammy/msvc-dev-cmd@v1.13.0
+        with:
+           arch: ${{ matrix.msvc_arch }}
+        if: ${{ matrix.msvc_arch }}
+
+      - name: Bootstrap vcpkg
+        env:
+          VCPKG_DEFAULT_TRIPLET: ${{ matrix.triplet }}
+        run: |
+          cd "$VCPKG_INSTALLATION_ROOT"
+          git pull > nul
+          ./bootstrap-vcpkg.bat -disableMetrics
+        shell: bash
+        if: ${{ matrix.msvc_arch }}
+
+      - name: Install C deps via vcpkg
+        env:
+          VCPKG_DEFAULT_TRIPLET: ${{ matrix.triplet }}
+        run: |
+          vcpkg install --feature-flags="versions,manifests" --x-manifest-root=$Env:GITHUB_WORKSPACE/ci --x-install-root=$Env:VCPKG_INSTALLATION_ROOT/installed
+        shell: pwsh
+        if: ${{ matrix.msvc_arch }}
+
+      - name: Build libgdal 3.13.0 from source (Windows, MSVC + vcpkg deps)
+        run: |
+          python -m pip install ninja
+          bash ci/build_gdal_windows.sh "$GDAL_VERSION" "${{ matrix.triplet }}" "C:/gdalinst"
+        shell: bash
+        if: ${{ matrix.msvc_arch }}
+
+      - name: Build wheels
+        uses: pypa/cibuildwheel@v3.4.1
+        with:
+          package-dir: gdal-src
+        env:
+          CIBW_ENABLE: cpython-freethreading
+          CIBW_SKIP: '*pp* *musllinux*'
+          CIBW_ARCHS: ${{ matrix.arch }}
+
+          # --- Build-time discovery of libgdal ---
+          # Linux: config.sh installs into /usr/local; gdal-config is on PATH.
+          CIBW_ENVIRONMENT_LINUX: >-
+            GDAL_VERSION=${{ env.GDAL_VERSION }}
+            BUILD_PREFIX=/usr/local
+          # macOS: config.sh installs into gdal_libs; put its bin on PATH so the
+          # GDAL setup.py finds gdal-config (it calls the bare name, no env var).
+          CIBW_ENVIRONMENT_MACOS: >-
+            GDAL_VERSION=${{ env.GDAL_VERSION }}
+            CMAKE_OSX_ARCHITECTURES='${{ matrix.cmake_osx_architectures }}'
+            MACOSX_DEPLOYMENT_TARGET=${{ matrix.macos_deployment_target }}
+            BUILD_PREFIX=${GITHUB_WORKSPACE}/gdal_libs
+            PATH=${GITHUB_WORKSPACE}/gdal_libs/bin:$PATH
+            DYLD_LIBRARY_PATH=${GITHUB_WORKSPACE}/gdal_libs/lib:$DYLD_LIBRARY_PATH
+            LDFLAGS="${LDFLAGS} -arch ${{ matrix.arch }} -Wl,-rpath,${GITHUB_WORKSPACE}/gdal_libs/lib"
+          # Windows/MSVC: setup.py returns before the gdal-config fallback, so the
+          # compiler/linker rely on INCLUDE/LIB env vars. Point them at the libgdal
+          # 3.13.0 we built from source (C:/gdalinst), so the bindings match.
+          CIBW_ENVIRONMENT_WINDOWS: >-
+            GDAL_VERSION=${{ env.GDAL_VERSION }}
+            GDAL_INCLUDE_PATH="C:/gdalinst/include"
+            GDAL_LIBRARY_PATH="C:/gdalinst/lib"
+            INCLUDE="C:/gdalinst/include;$INCLUDE"
+            LIB="C:/gdalinst/lib;$LIB"
+
+          # Build libgdal + the full C dependency chain from source (Linux/macOS).
+          CIBW_BEFORE_ALL_LINUX: |
+            yum install -y wget cmake perl-core zlib-devel ImageMagick bzip2 flex bison
+            cmake --version
+            bash ./ci/config.sh
+          CIBW_BEFORE_ALL_MACOS: |
+            HOMEBREW_NO_AUTO_UPDATE=1 brew install autoconf automake libtool coreutils cmake wget
+            bash ./ci/config.sh
+          CIBW_BEFORE_BUILD_WINDOWS: pip install delvewheel
+
+          # Repair (vendor shared libs) then inject data + runtime shim.
+          # Data dirs only exist inside the build env, so injection happens here.
+          # NB: clean the repair dir each invocation. cibuildwheel reuses the
+          # same job for every Python, and a glob over a shared dir would re-patch
+          # (and re-emit) wheels from earlier Python builds -> "already generated".
+          CIBW_REPAIR_WHEEL_COMMAND_LINUX: >-
+            export 'LD_LIBRARY_PATH=/usr/local/lib64:/usr/local/lib:$LD_LIBRARY_PATH' &&
+            rm -rf /tmp/repaired && mkdir -p /tmp/repaired &&
+            auditwheel repair -w /tmp/repaired {wheel} &&
+            python {project}/ci/patch_wheel.py "/tmp/repaired/*.whl" {dest_dir}
+            --gdal-data /usr/local/share/gdal --proj-data /usr/local/share/proj
+          CIBW_REPAIR_WHEEL_COMMAND_MACOS: >-
+            export DYLD_LIBRARY_PATH=${GITHUB_WORKSPACE}/gdal_libs/lib:$DYLD_LIBRARY_PATH &&
+            rm -rf /tmp/repaired && mkdir -p /tmp/repaired &&
+            delocate-wheel --require-archs {delocate_archs} -w /tmp/repaired -v {wheel} &&
+            python {project}/ci/patch_wheel.py "/tmp/repaired/*.whl" {dest_dir}
+            --gdal-data ${GITHUB_WORKSPACE}/gdal_libs/share/gdal --proj-data ${GITHUB_WORKSPACE}/gdal_libs/share/proj
+          CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: >-
+            rm -rf /c/repaired && mkdir -p /c/repaired &&
+            delvewheel repair --add-path "C:/gdalinst/bin;C:/vcpkg/installed/${{ matrix.triplet }}/bin" -w C:/repaired {wheel} &&
+            python {project}/ci/patch_wheel.py "C:/repaired/*.whl" {dest_dir}
+            --gdal-data C:/gdalinst/share/gdal --proj-data C:/vcpkg/installed/${{ matrix.triplet }}/share/proj
+
+          # Smoke-test every wheel before it leaves the build.
+          CIBW_TEST_REQUIRES: numpy
+          CIBW_TEST_COMMAND: python {project}/tests/test_smoke.py
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}-${{ matrix.arch }}
+          path: ./wheelhouse/*.whl
+
+  publish:
+    name: Publish to PyPI
+    needs: [build_wheels]
+    permissions:
+      id-token: write
+      contents: read
+    environment:
+      name: pypi
+      url: https://pypi.org/project/gdal-wheels/
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.upload == '1' }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          merge-multiple: true
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
