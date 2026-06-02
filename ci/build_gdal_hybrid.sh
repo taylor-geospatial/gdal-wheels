@@ -1,60 +1,58 @@
 #!/bin/bash
-# Hybrid build (Linux/macOS): install GDAL's C dependencies as PREBUILT,
-# version-coordinated conda-forge binaries via micromamba, then build only
-# libgdal itself from source against them. This keeps our GDAL version + driver
-# choices + provenance, while killing the ~25-source-download maintenance
-# treadmill. The deps + libgdal land in $PREFIX (used as the install prefix and
-# the dep search root), so the rest of the pipeline (gdal-config, auditwheel/
-# delocate) works unchanged.
+# Hybrid build (Linux): use vcpkg to provide GDAL's C dependencies (managed,
+# version-coordinated via the manifest baseline, with robust downloads + binary
+# caching), then build libgdal itself from source against them. vcpkg compiles
+# the deps with the *native manylinux toolchain*, so their symbols satisfy the
+# manylinux ABI policy (unlike conda-forge's GCC-15 binaries, which auditwheel
+# rejects). Keeps our GDAL version + driver choices + provenance; kills the
+# hand-maintained 25-source-download treadmill.
 #
-# Usage: bash ci/build_gdal_hybrid.sh <gdal-version> <prefix>
+# Usage: bash ci/build_gdal_hybrid.sh <gdal-version> <gdal-install-prefix>
 set -euo pipefail
 
 GDAL_VERSION="${1:?gdal version}"
 PREFIX="${2:?install prefix}"
+PROJECT="$(pwd)"
 
-OS="$(uname -s)"; ARCH="$(uname -m)"
-case "$OS-$ARCH" in
-  Linux-x86_64)   MAMBA_PLATFORM=linux-64 ;;
-  Linux-aarch64)  MAMBA_PLATFORM=linux-aarch64 ;;
-  Darwin-x86_64)  MAMBA_PLATFORM=osx-64 ;;
-  Darwin-arm64)   MAMBA_PLATFORM=osx-arm64 ;;
-  *) echo "unsupported $OS-$ARCH"; exit 1 ;;
+ARCH="$(uname -m)"
+case "$ARCH" in
+  x86_64)  TRIPLET=x64-linux-dynamic ;;
+  aarch64) TRIPLET=arm64-linux-dynamic ;;
+  *) echo "unsupported arch $ARCH"; exit 1 ;;
 esac
 
-# Download the GDAL source FIRST, with the system curl. micromamba below puts a
-# conda curl on PATH (we prepend $PREFIX/bin) that can lack protocols, so any
-# curl after env creation may fail.
+echo "Installing vcpkg build prerequisites..."
+yum install -y zip unzip tar curl git perl ninja-build >/dev/null 2>&1 || \
+  yum install -y zip unzip tar curl git perl >/dev/null 2>&1
+command -v ninja >/dev/null 2>&1 || pip install ninja >/dev/null 2>&1 || true
+
+echo "Bootstrapping vcpkg..."
+export VCPKG_ROOT=/opt/vcpkg
+if [ ! -x "$VCPKG_ROOT/vcpkg" ]; then
+  git clone --depth 1 https://github.com/microsoft/vcpkg "$VCPKG_ROOT"
+  "$VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics
+fi
+export VCPKG_DEFAULT_TRIPLET="$TRIPLET"
+export VCPKG_INSTALLED="$VCPKG_ROOT/installed/$TRIPLET"
+
+echo "Installing C deps via vcpkg ($TRIPLET) from ci/vcpkg.json..."
+"$VCPKG_ROOT/vcpkg" install \
+    --feature-flags="versions,manifests" \
+    --x-manifest-root="$PROJECT/ci" \
+    --x-install-root="$VCPKG_ROOT/installed" \
+    --triplet "$TRIPLET"
+
 echo "Downloading GDAL ${GDAL_VERSION} source..."
 curl -fsSL "https://download.osgeo.org/gdal/${GDAL_VERSION}/gdal-${GDAL_VERSION}.tar.gz" -o gdal-full.tar.gz
 tar xzf gdal-full.tar.gz
-
-echo "Installing conda-forge C deps ($MAMBA_PLATFORM) into $PREFIX via micromamba..."
-mkdir -p "$PREFIX"
-export MAMBA_ROOT_PREFIX="${MAMBA_ROOT_PREFIX:-/tmp/mamba-root}"
-curl -Ls "https://micro.mamba.pm/api/micromamba/${MAMBA_PLATFORM}/latest" | tar -xj -C /tmp bin/micromamba
-MAMBA=/tmp/bin/micromamba
-
-# GDAL's build/runtime C dependencies (NOT gdal itself): conda-forge resolves a
-# mutually-compatible set. --only-deps applies to the whole spec list, so install
-# the build tools (cmake/ninja/pkg-config) in a separate, normal step.
-"$MAMBA" create -y -p "$PREFIX" -c conda-forge "libgdal" --only-deps
-# conda-forge splits GDAL: Arrow/Parquet/HDF5/NetCDF live in separate plugin
-# packages, so `libgdal --only-deps` doesn't pull them. Install those driver
-# libraries directly (plus the build tools). conda's prebuilt hdf5 also avoids
-# the libaec source flake we hit from-source.
-"$MAMBA" install -y -p "$PREFIX" -c conda-forge \
-    cmake ninja pkg-config \
-    libarrow libarrow-dataset libparquet hdf5 libnetcdf
-
-echo "Building libgdal ${GDAL_VERSION} from source against the conda deps..."
 cd "gdal-${GDAL_VERSION}"
 
-export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
-"$PREFIX/bin/cmake" -S . -B build -G Ninja \
+echo "Building libgdal ${GDAL_VERSION} against the vcpkg deps..."
+cmake -S . -B build -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
+    -DVCPKG_TARGET_TRIPLET="$TRIPLET" \
     -DCMAKE_INSTALL_PREFIX="$PREFIX" \
-    -DCMAKE_PREFIX_PATH="$PREFIX" \
     -DBUILD_SHARED_LIBS=ON \
     -DBUILD_PYTHON_BINDINGS=OFF \
     -DBUILD_JAVA_BINDINGS=OFF \
@@ -69,8 +67,6 @@ export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
     -DGDAL_USE_GEOTIFF_INTERNAL=ON \
     -DGDAL_USE_SQLITE3=ON \
     -DOGR_ENABLE_DRIVER_GPKG=ON \
-    -DGDAL_USE_HDF5=ON \
-    -DGDAL_USE_NETCDF=ON \
     -DGDAL_USE_OPENJPEG=ON \
     -DGDAL_USE_PNG=ON \
     -DGDAL_USE_JPEG=ON \
@@ -86,8 +82,10 @@ export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
     -DGDAL_ENABLE_DRIVER_ZARR=ON \
     -DGDAL_USE_EXPAT=ON
 
-"$PREFIX/bin/cmake" --build build -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu)"
-"$PREFIX/bin/cmake" --install build
+cmake --build build -j"$(nproc)"
+cmake --install build
 
 echo "libgdal built. Version:"
 "$PREFIX/bin/gdal-config" --version
+# Record the vcpkg dep lib dir for the repair step (LD_LIBRARY_PATH / data).
+echo "$VCPKG_INSTALLED" > /tmp/vcpkg_installed_dir.txt

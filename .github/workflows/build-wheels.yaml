@@ -128,13 +128,14 @@ jobs:
           CIBW_ARCHS: ${{ matrix.arch }}
 
           # --- Build-time discovery of libgdal ---
-          # Linux (hybrid): conda-forge deps + our libgdal land in /opt/gdaldeps;
-          # put its bin on PATH so the GDAL setup.py finds gdal-config.
+          # Linux (hybrid via vcpkg): our libgdal in /opt/gdaldeps, its C deps in
+          # the vcpkg install tree. gdal-config on PATH; both lib dirs on the
+          # library path so the bindings link and auditwheel resolves deps.
           CIBW_ENVIRONMENT_LINUX: >-
             GDAL_VERSION=${{ env.GDAL_VERSION }}
             BUILD_PREFIX=/opt/gdaldeps
             PATH=/opt/gdaldeps/bin:$PATH
-            LD_LIBRARY_PATH=/opt/gdaldeps/lib:/opt/gdaldeps/lib64:$LD_LIBRARY_PATH
+            LD_LIBRARY_PATH=/opt/gdaldeps/lib:/opt/gdaldeps/lib64:/opt/vcpkg/installed/x64-linux-dynamic/lib:$LD_LIBRARY_PATH
           # macOS: config.sh installs into gdal_libs; put its bin on PATH so the
           # GDAL setup.py finds gdal-config (it calls the bare name, no env var).
           CIBW_ENVIRONMENT_MACOS: >-
@@ -169,11 +170,11 @@ jobs:
           # same job for every Python, and a glob over a shared dir would re-patch
           # (and re-emit) wheels from earlier Python builds -> "already generated".
           CIBW_REPAIR_WHEEL_COMMAND_LINUX: >-
-            export 'LD_LIBRARY_PATH=/opt/gdaldeps/lib64:/opt/gdaldeps/lib:$LD_LIBRARY_PATH' &&
+            export 'LD_LIBRARY_PATH=/opt/gdaldeps/lib64:/opt/gdaldeps/lib:/opt/vcpkg/installed/x64-linux-dynamic/lib:$LD_LIBRARY_PATH' &&
             rm -rf /tmp/repaired && mkdir -p /tmp/repaired &&
             auditwheel repair -w /tmp/repaired {wheel} &&
             python {project}/ci/patch_wheel.py "/tmp/repaired/*.whl" {dest_dir}
-            --gdal-data /opt/gdaldeps/share/gdal --proj-data /opt/gdaldeps/share/proj
+            --gdal-data /opt/gdaldeps/share/gdal --proj-data /opt/vcpkg/installed/x64-linux-dynamic/share/proj
           CIBW_REPAIR_WHEEL_COMMAND_MACOS: >-
             export DYLD_LIBRARY_PATH=${GITHUB_WORKSPACE}/gdal_libs/lib:$DYLD_LIBRARY_PATH &&
             rm -rf /tmp/repaired && mkdir -p /tmp/repaired &&
