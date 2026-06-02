@@ -22,8 +22,10 @@ case "$ARCH" in
 esac
 
 echo "Installing vcpkg build prerequisites..."
-yum install -y zip unzip tar curl git perl ninja-build >/dev/null 2>&1 || \
-  yum install -y zip unzip tar curl git perl >/dev/null 2>&1
+# flex+bison are needed by vcpkg's thrift port (Arrow's dep); vcpkg expects them
+# from the system package manager on Linux.
+yum install -y zip unzip tar curl git perl flex bison ninja-build >/dev/null 2>&1 || \
+  yum install -y zip unzip tar curl git perl flex bison >/dev/null 2>&1
 command -v ninja >/dev/null 2>&1 || pip install ninja >/dev/null 2>&1 || true
 
 echo "Bootstrapping vcpkg..."
