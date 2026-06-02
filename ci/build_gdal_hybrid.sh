@@ -22,6 +22,13 @@ case "$OS-$ARCH" in
   *) echo "unsupported $OS-$ARCH"; exit 1 ;;
 esac
 
+# Download the GDAL source FIRST, with the system curl. micromamba below puts a
+# conda curl on PATH (we prepend $PREFIX/bin) that can lack protocols, so any
+# curl after env creation may fail.
+echo "Downloading GDAL ${GDAL_VERSION} source..."
+curl -fsSL "https://download.osgeo.org/gdal/${GDAL_VERSION}/gdal-${GDAL_VERSION}.tar.gz" -o gdal-full.tar.gz
+tar xzf gdal-full.tar.gz
+
 echo "Installing conda-forge C deps ($MAMBA_PLATFORM) into $PREFIX via micromamba..."
 mkdir -p "$PREFIX"
 export MAMBA_ROOT_PREFIX="${MAMBA_ROOT_PREFIX:-/tmp/mamba-root}"
@@ -29,15 +36,12 @@ curl -Ls "https://micro.mamba.pm/api/micromamba/${MAMBA_PLATFORM}/latest" | tar 
 MAMBA=/tmp/bin/micromamba
 
 # GDAL's build/runtime C dependencies (NOT gdal itself). conda-forge resolves a
-# mutually-compatible set. compilers/libstdcxx pulled so the vendored libs have a
-# consistent C++ runtime.
+# mutually-compatible set; cmake/ninja/pkg-config come along for the build.
 "$MAMBA" create -y -p "$PREFIX" -c conda-forge \
     "libgdal" --only-deps \
     cmake ninja pkg-config
 
 echo "Building libgdal ${GDAL_VERSION} from source against the conda deps..."
-curl -fsSL "https://download.osgeo.org/gdal/${GDAL_VERSION}/gdal-${GDAL_VERSION}.tar.gz" -o gdal-full.tar.gz
-tar xzf gdal-full.tar.gz
 cd "gdal-${GDAL_VERSION}"
 
 export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
