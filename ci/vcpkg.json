@@ -6,7 +6,7 @@
         "proj",
         "geos",
         "curl",
-        "sqlite3",
+        { "name": "sqlite3", "features": ["rtree", "json1", "fts5", "geopoly", "math"] },
         "expat",
         "zlib",
         "zstd",
