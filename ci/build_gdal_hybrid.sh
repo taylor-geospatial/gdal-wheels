@@ -35,11 +35,11 @@ export MAMBA_ROOT_PREFIX="${MAMBA_ROOT_PREFIX:-/tmp/mamba-root}"
 curl -Ls "https://micro.mamba.pm/api/micromamba/${MAMBA_PLATFORM}/latest" | tar -xj -C /tmp bin/micromamba
 MAMBA=/tmp/bin/micromamba
 
-# GDAL's build/runtime C dependencies (NOT gdal itself). conda-forge resolves a
-# mutually-compatible set; cmake/ninja/pkg-config come along for the build.
-"$MAMBA" create -y -p "$PREFIX" -c conda-forge \
-    "libgdal" --only-deps \
-    cmake ninja pkg-config
+# GDAL's build/runtime C dependencies (NOT gdal itself): conda-forge resolves a
+# mutually-compatible set. --only-deps applies to the whole spec list, so install
+# the build tools (cmake/ninja/pkg-config) in a separate, normal step.
+"$MAMBA" create -y -p "$PREFIX" -c conda-forge "libgdal" --only-deps
+"$MAMBA" install -y -p "$PREFIX" -c conda-forge cmake ninja pkg-config
 
 echo "Building libgdal ${GDAL_VERSION} from source against the conda deps..."
 cd "gdal-${GDAL_VERSION}"
