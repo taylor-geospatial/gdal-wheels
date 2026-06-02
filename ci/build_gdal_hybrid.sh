@@ -40,11 +40,17 @@ export VCPKG_DEFAULT_TRIPLET="$TRIPLET"
 export VCPKG_INSTALLED="$VCPKG_ROOT/installed/$TRIPLET"
 
 echo "Installing C deps via vcpkg ($TRIPLET) from ci/vcpkg.json..."
-"$VCPKG_ROOT/vcpkg" install \
+if ! "$VCPKG_ROOT/vcpkg" install \
     --feature-flags="versions,manifests" \
     --x-manifest-root="$PROJECT/ci" \
     --x-install-root="$VCPKG_ROOT/installed" \
-    --triplet "$TRIPLET"
+    --triplet "$TRIPLET"; then
+  echo "=== vcpkg install failed; dumping recent port build logs ==="
+  find "$VCPKG_ROOT/buildtrees" -name "*-err.log" -o -name "*-out.log" 2>/dev/null \
+    | xargs ls -t 2>/dev/null | head -4 \
+    | while read -r f; do echo "### $f"; tail -50 "$f"; echo; done
+  exit 1
+fi
 
 echo "Downloading GDAL ${GDAL_VERSION} source..."
 curl -fsSL "https://download.osgeo.org/gdal/${GDAL_VERSION}/gdal-${GDAL_VERSION}.tar.gz" -o gdal-full.tar.gz
