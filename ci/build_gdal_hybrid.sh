@@ -22,10 +22,21 @@ case "$ARCH" in
 esac
 
 echo "Installing vcpkg build prerequisites..."
-# flex+bison are needed by vcpkg's thrift port (Arrow's dep); vcpkg expects them
-# from the system package manager on Linux.
-yum install -y zip unzip tar curl git perl flex bison ninja-build >/dev/null 2>&1 || \
-  yum install -y zip unzip tar curl git perl flex bison >/dev/null 2>&1
+# flex+bison are needed by vcpkg's thrift port (Arrow's dep).
+yum install -y zip unzip tar curl git perl flex bison m4 ninja-build >/dev/null 2>&1 || \
+  yum install -y zip unzip tar curl git perl flex bison m4 >/dev/null 2>&1
+
+# AlmaLinux 8 (manylinux_2_28) ships bison 3.0, but vcpkg's thrift port invokes
+# bison with --file-prefix-map (needs >= 3.7). Build a newer bison if needed; it
+# installs to /usr/local/bin, which precedes /usr/bin so cmake's FindBISON uses it.
+if ! bison --version 2>/dev/null | head -1 | grep -qE '3\.(7|8|9|[1-9][0-9])'; then
+  echo "Building bison 3.8.2 (system bison too old for thrift)..."
+  env -u LD_LIBRARY_PATH curl -fsSL https://ftp.gnu.org/gnu/bison/bison-3.8.2.tar.gz -o bison.tar.gz
+  tar xzf bison.tar.gz
+  (cd bison-3.8.2 && ./configure --prefix=/usr/local >/dev/null && make -j"$(nproc)" >/dev/null && make install >/dev/null)
+  hash -r
+  bison --version | head -1
+fi
 command -v ninja >/dev/null 2>&1 || pip install ninja >/dev/null 2>&1 || true
 
 echo "Bootstrapping vcpkg..."
