@@ -53,7 +53,10 @@ if ! "$VCPKG_ROOT/vcpkg" install \
 fi
 
 echo "Downloading GDAL ${GDAL_VERSION} source..."
-curl -fsSL "https://download.osgeo.org/gdal/${GDAL_VERSION}/gdal-${GDAL_VERSION}.tar.gz" -o gdal-full.tar.gz
+# Clear LD_LIBRARY_PATH for this curl: the workflow puts vcpkg's lib dir on it,
+# and vcpkg's libcurl (built without all protocols) would otherwise be loaded by
+# the system curl and fail with "feature not found" (error 4).
+env -u LD_LIBRARY_PATH curl -fsSL "https://download.osgeo.org/gdal/${GDAL_VERSION}/gdal-${GDAL_VERSION}.tar.gz" -o gdal-full.tar.gz
 tar xzf gdal-full.tar.gz
 cd "gdal-${GDAL_VERSION}"
 
