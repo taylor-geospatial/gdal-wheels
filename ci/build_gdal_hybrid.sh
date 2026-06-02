@@ -29,7 +29,9 @@ command -v ninja >/dev/null 2>&1 || pip install ninja >/dev/null 2>&1 || true
 echo "Bootstrapping vcpkg..."
 export VCPKG_ROOT=/opt/vcpkg
 if [ ! -x "$VCPKG_ROOT/vcpkg" ]; then
-  git clone --depth 1 https://github.com/microsoft/vcpkg "$VCPKG_ROOT"
+  # Full clone (not --depth 1): vcpkg must be able to `git show` the manifest's
+  # builtin-baseline commit, which is older than current master HEAD.
+  git clone https://github.com/microsoft/vcpkg "$VCPKG_ROOT"
   "$VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics
 fi
 export VCPKG_DEFAULT_TRIPLET="$TRIPLET"
