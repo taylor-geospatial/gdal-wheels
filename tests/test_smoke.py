@@ -45,10 +45,8 @@ def main():
     print(f"vector drivers registered: {ogr.GetDriverCount()}")
 
     # 4b. The expanded driver set must be present (registration, not connection).
-    # NB: Arrow/Parquet temporarily excluded on the vcpkg-hybrid spike (thrift
-    # port issue); restore once Arrow is re-added.
     expected = ["GeoJSON", "GML", "CSV", "KML", "FlatGeobuf", "MVT",  # vector optional
-                "PostgreSQL",                                         # libpq
+                "PostgreSQL", "Parquet", "Arrow",                     # libpq, arrow
                 "Zarr"]                                               # raster
     missing = [d for d in expected if gdal.GetDriverByName(d) is None
                and ogr.GetDriverByName(d) is None]

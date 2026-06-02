@@ -21,7 +21,8 @@
         "libxml2",
         "pcre2",
         "openssl",
-        "json-c"
+        "json-c",
+        { "name": "arrow", "features": ["parquet"] }
     ],
     "builtin-baseline": "f3e10653cc27d62a37a3763cd84b38bca07c6075",
     "$comment": "Deps-only manifest for the Windows source-build of libgdal 3.13.0 (MSVC + cmake). vcpkg supplies the C dependencies; we build libgdal ourselves so it matches the 3.13.0 bindings. netcdf+hdf5 omitted for now (vcpkg's libaec source on gitlab.dkrz.de persistently times out on GH Windows runners) -> tracked follow-up for Windows hdf5/netcdf driver parity."
