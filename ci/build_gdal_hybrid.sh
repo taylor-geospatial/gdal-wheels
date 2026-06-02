@@ -39,7 +39,13 @@ MAMBA=/tmp/bin/micromamba
 # mutually-compatible set. --only-deps applies to the whole spec list, so install
 # the build tools (cmake/ninja/pkg-config) in a separate, normal step.
 "$MAMBA" create -y -p "$PREFIX" -c conda-forge "libgdal" --only-deps
-"$MAMBA" install -y -p "$PREFIX" -c conda-forge cmake ninja pkg-config
+# conda-forge splits GDAL: Arrow/Parquet/HDF5/NetCDF live in separate plugin
+# packages, so `libgdal --only-deps` doesn't pull them. Install those driver
+# libraries directly (plus the build tools). conda's prebuilt hdf5 also avoids
+# the libaec source flake we hit from-source.
+"$MAMBA" install -y -p "$PREFIX" -c conda-forge \
+    cmake ninja pkg-config \
+    libarrow libarrow-dataset libparquet hdf5 libnetcdf
 
 echo "Building libgdal ${GDAL_VERSION} from source against the conda deps..."
 cd "gdal-${GDAL_VERSION}"
