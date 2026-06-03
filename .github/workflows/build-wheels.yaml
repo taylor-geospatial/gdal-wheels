@@ -57,7 +57,7 @@ jobs:
         shell: bash
         run: |
           FULL='[{"os":"ubuntu-22.04","arch":"x86_64"},{"os":"ubuntu-22.04-arm","arch":"aarch64"},{"os":"macos-15-intel","arch":"x86_64","cmake_osx_architectures":"x86_64","macos_deployment_target":"15.0"},{"os":"macos-14","arch":"arm64","cmake_osx_architectures":"arm64","macos_deployment_target":"14.0"},{"os":"windows-2022","arch":"AMD64","triplet":"x64-windows","msvc_arch":"x64"},{"os":"windows-11-arm","arch":"ARM64","triplet":"arm64-windows","msvc_arch":"ARM64"}]'
-          DEV='[{"os":"ubuntu-22.04","arch":"x86_64"}]'
+          DEV='[{"os":"ubuntu-22.04","arch":"x86_64"},{"os":"ubuntu-22.04-arm","arch":"aarch64"}]'
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] || [ "${{ github.event_name }}" = "release" ] || printf '%s' "${{ github.event.head_commit.message }}" | grep -q '\[full ci\]'; then
             echo "matrix=$FULL" >> "$GITHUB_OUTPUT"; echo "Selected FULL matrix"
           else
@@ -135,7 +135,7 @@ jobs:
             GDAL_VERSION=${{ env.GDAL_VERSION }}
             BUILD_PREFIX=/opt/gdaldeps
             PATH=/opt/gdaldeps/bin:$PATH
-            LD_LIBRARY_PATH=/opt/gdaldeps/lib:/opt/gdaldeps/lib64:/opt/vcpkg/installed/x64-linux-dynamic/lib:$LD_LIBRARY_PATH
+            LD_LIBRARY_PATH=/opt/gdaldeps/lib:/opt/gdaldeps/lib64:/opt/gdaldeps-deps/lib:$LD_LIBRARY_PATH
           # macOS: config.sh installs into gdal_libs; put its bin on PATH so the
           # GDAL setup.py finds gdal-config (it calls the bare name, no env var).
           CIBW_ENVIRONMENT_MACOS: >-
@@ -170,11 +170,11 @@ jobs:
           # same job for every Python, and a glob over a shared dir would re-patch
           # (and re-emit) wheels from earlier Python builds -> "already generated".
           CIBW_REPAIR_WHEEL_COMMAND_LINUX: >-
-            export 'LD_LIBRARY_PATH=/opt/gdaldeps/lib64:/opt/gdaldeps/lib:/opt/vcpkg/installed/x64-linux-dynamic/lib:$LD_LIBRARY_PATH' &&
+            export 'LD_LIBRARY_PATH=/opt/gdaldeps/lib64:/opt/gdaldeps/lib:/opt/gdaldeps-deps/lib:$LD_LIBRARY_PATH' &&
             rm -rf /tmp/repaired && mkdir -p /tmp/repaired &&
             auditwheel repair -w /tmp/repaired {wheel} &&
             python {project}/ci/patch_wheel.py "/tmp/repaired/*.whl" {dest_dir}
-            --gdal-data /opt/gdaldeps/share/gdal --proj-data /opt/vcpkg/installed/x64-linux-dynamic/share/proj
+            --gdal-data /opt/gdaldeps/share/gdal --proj-data /opt/gdaldeps-deps/share/proj
           CIBW_REPAIR_WHEEL_COMMAND_MACOS: >-
             export DYLD_LIBRARY_PATH=${GITHUB_WORKSPACE}/gdal_libs/lib:$DYLD_LIBRARY_PATH &&
             rm -rf /tmp/repaired && mkdir -p /tmp/repaired &&

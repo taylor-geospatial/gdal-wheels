@@ -112,5 +112,6 @@ cmake --install build
 
 echo "libgdal built. Version:"
 "$PREFIX/bin/gdal-config" --version
-# Record the vcpkg dep lib dir for the repair step (LD_LIBRARY_PATH / data).
-echo "$VCPKG_INSTALLED" > /tmp/vcpkg_installed_dir.txt
+# Expose the vcpkg dep tree at a fixed, arch-independent path so the workflow's
+# env/repair commands don't need to hardcode the triplet (x64 vs arm64).
+ln -sfn "$VCPKG_INSTALLED" /opt/gdaldeps-deps
