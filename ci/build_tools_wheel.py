@@ -182,27 +182,44 @@ def collect_unix(apps, bin_dir, lib_dir, payload_bin, payload_lib, is_macos):
             if not is_macos and _skip_linux(name):
                 continue
             if name not in collected:
-                dst = payload_lib / name
+                # On Linux, store each lib under its SONAME (libtiff.so.6), not
+                # its realpath basename (libtiff.so.6.2.0): binaries/libs name
+                # deps by SONAME in DT_NEEDED, so a SONAME-named real file
+                # resolves directly -- no symlinks needed (which zip/pip handle
+                # poorly). shutil.copy2 already followed the original symlink.
+                destname = name
+                if not is_macos:
+                    destname = _soname(libpath) or name
+                dst = payload_lib / destname
                 shutil.copy2(libpath, dst)
                 os.chmod(dst, os.stat(dst).st_mode | stat.S_IWUSR)
                 collected[name] = dst
                 frontier.append(dst)
     print(f"  collected {len(collected)} shared libs into payload lib/")
 
-    # 3. RPATH fixups so binaries (in bin/) find libs (in ../lib) and libs find
-    #    each other (same dir).
+    # 3. RPATH fixups so each lib finds its siblings (same dir). NB: we do NOT
+    #    patchelf the *executables* on Linux -- patchelf --set-rpath on these
+    #    non-PIE ET_EXEC binaries can emit overlapping PT_LOAD segments ("Uhuuh,
+    #    elf segment ... already mapped" -> SIGSEGV in ld.so). The launcher puts
+    #    the lib dir on LD_LIBRARY_PATH instead, so the apps need no RPATH.
     if is_macos:
         _fix_rpaths_macos(payload_bin, payload_lib)
     else:
-        _fix_rpaths_linux(payload_bin, payload_lib)
+        _fix_rpaths_linux(payload_lib)
     return collected
 
 
-def _fix_rpaths_linux(payload_bin, payload_lib):
-    for b in payload_bin.iterdir():
-        _run(["patchelf", "--set-rpath", "$ORIGIN/../lib", str(b)])
+def _soname(path):
+    out = subprocess.run(["patchelf", "--print-soname", str(path)],
+                         capture_output=True, text=True)
+    return out.stdout.strip()
+
+
+def _fix_rpaths_linux(payload_lib):
+    # Only the libraries (ET_DYN) get an $ORIGIN rpath so they find their
+    # siblings. Executables are deliberately left untouched (see collect_unix).
     for lib in payload_lib.iterdir():
-        if lib.is_file():
+        if lib.is_file() and not lib.is_symlink():
             _run(["patchelf", "--set-rpath", "$ORIGIN", str(lib)])
 
 
@@ -286,6 +303,9 @@ fi
 export GDAL_DATA="${GDAL_DATA:-$pkg/gdal_data}"
 export PROJ_DATA="${PROJ_DATA:-$pkg/proj_data}"
 export PROJ_LIB="${PROJ_LIB:-$pkg/proj_data}"
+# The apps carry no RPATH (patchelf corrupts non-PIE executables), so point the
+# loader at the bundled libs here. Prepend so our vendored stack wins.
+export LD_LIBRARY_PATH="$pkg/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 exec "$pkg/bin/__APP__" "$@"
 """
 
