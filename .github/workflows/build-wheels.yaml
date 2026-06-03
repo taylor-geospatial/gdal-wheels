@@ -180,10 +180,12 @@ jobs:
             delocate-wheel --require-archs {delocate_archs} -w /tmp/repaired -v {wheel} &&
             python {project}/ci/patch_wheel.py "/tmp/repaired/*.whl" {dest_dir}
             --gdal-data ${GITHUB_WORKSPACE}/gdal_libs/share/gdal --proj-data ${GITHUB_WORKSPACE}/gdal_libs/share/proj
+          # NB: no bash-isms here -- cibuildwheel runs the Windows repair in cmd.
+          # cibuildwheel pre-cleans {dest_dir} per wheel, so delvewheel writes
+          # there directly and patch_wheel patches it in place (one .whl).
           CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: >-
-            rm -rf /c/repaired && mkdir -p /c/repaired &&
-            delvewheel repair --add-path "C:/gdalinst/bin;C:/vcpkg/installed/${{ matrix.triplet }}/bin" -w C:/repaired {wheel} &&
-            python {project}/ci/patch_wheel.py "C:/repaired/*.whl" {dest_dir}
+            delvewheel repair --add-path "C:/gdalinst/bin;C:/vcpkg/installed/${{ matrix.triplet }}/bin" -w {dest_dir} {wheel} &&
+            python {project}/ci/patch_wheel.py "{dest_dir}/*.whl" {dest_dir}
             --gdal-data C:/gdalinst/share/gdal --proj-data C:/vcpkg/installed/${{ matrix.triplet }}/share/proj
 
           # Smoke-test every wheel before it leaves the build.
