@@ -174,12 +174,14 @@ jobs:
             auditwheel repair -w /tmp/repaired {wheel} &&
             python {project}/ci/patch_wheel.py "/tmp/repaired/*.whl" {dest_dir}
             --gdal-data /opt/gdaldeps/share/gdal --proj-data /opt/gdaldeps/share/proj
+            --licenses-src /opt/gdaldeps
           CIBW_REPAIR_WHEEL_COMMAND_MACOS: >-
             export DYLD_LIBRARY_PATH=${GITHUB_WORKSPACE}/gdal_libs/lib:$DYLD_LIBRARY_PATH &&
             rm -rf /tmp/repaired && mkdir -p /tmp/repaired &&
             delocate-wheel --require-archs {delocate_archs} -w /tmp/repaired -v {wheel} &&
             python {project}/ci/patch_wheel.py "/tmp/repaired/*.whl" {dest_dir}
             --gdal-data ${GITHUB_WORKSPACE}/gdal_libs/share/gdal --proj-data ${GITHUB_WORKSPACE}/gdal_libs/share/proj
+            --licenses-src ${GITHUB_WORKSPACE}/gdal_libs
           # NB: no bash-isms here -- cibuildwheel runs the Windows repair in cmd.
           # cibuildwheel pre-cleans {dest_dir} per wheel, so delvewheel writes
           # there directly and patch_wheel patches it in place (one .whl).
@@ -187,6 +189,7 @@ jobs:
             delvewheel repair --add-path "C:/gdalinst/bin;C:/vcpkg/installed/${{ matrix.triplet }}/bin" -w {dest_dir} {wheel} &&
             python {project}/ci/patch_wheel.py "{dest_dir}/*.whl" {dest_dir}
             --gdal-data C:/gdalinst/share/gdal --proj-data C:/vcpkg/installed/${{ matrix.triplet }}/share/proj
+            --licenses-src C:/vcpkg/installed/${{ matrix.triplet }}
 
           # Smoke-test every wheel before it leaves the build.
           CIBW_TEST_REQUIRES: numpy

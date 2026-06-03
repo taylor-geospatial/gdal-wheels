@@ -65,6 +65,13 @@ def main():
     assert (out == arr).all(), "gdal_array round-trip mismatch"
     print("gdal_array numpy round-trip ok")
 
+    # 6. Bundled dependency licenses must be present (compliance).
+    import osgeo as _osgeo
+    licdir = os.path.join(os.path.dirname(_osgeo.__file__), "licenses")
+    lics = os.listdir(licdir) if os.path.isdir(licdir) else []
+    print(f"bundled dependency licenses: {len(lics)}")
+    assert len(lics) >= 5, f"expected bundled dep licenses in osgeo/licenses, found {lics}"
+
     print("SMOKE TEST PASSED")
 
 
