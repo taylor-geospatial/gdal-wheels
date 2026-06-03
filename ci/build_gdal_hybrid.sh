@@ -1,11 +1,14 @@
 #!/bin/bash
-# Hybrid build (Linux): use vcpkg to provide GDAL's C dependencies (managed,
-# version-coordinated via the manifest baseline, with robust downloads + binary
-# caching), then build libgdal itself from source against them. vcpkg compiles
-# the deps with the *native manylinux toolchain*, so their symbols satisfy the
-# manylinux ABI policy (unlike conda-forge's GCC-15 binaries, which auditwheel
-# rejects). Keeps our GDAL version + driver choices + provenance; kills the
-# hand-maintained 25-source-download treadmill.
+# Hybrid build (Linux + macOS): use vcpkg to provide GDAL's C dependencies
+# (managed, version-coordinated via the manifest baseline, robust downloads +
+# binary caching), then build libgdal itself from source against them. vcpkg
+# compiles the deps with the *native* toolchain, so their symbols satisfy the
+# manylinux / macOS ABI policies (unlike conda-forge's GCC-15 binaries, which
+# auditwheel rejects). Keeps our GDAL version + driver choices + provenance and
+# kills the hand-maintained 25-source-download treadmill.
+#
+# All deps + libgdal are installed into $PREFIX, so the workflow's env/repair use
+# a single path on every OS.
 #
 # Usage: bash ci/build_gdal_hybrid.sh <gdal-version> <gdal-install-prefix>
 set -euo pipefail
@@ -14,41 +17,52 @@ GDAL_VERSION="${1:?gdal version}"
 PREFIX="${2:?install prefix}"
 PROJECT="$(pwd)"
 
+OS="$(uname -s)"
 ARCH="$(uname -m)"
-case "$ARCH" in
-  x86_64)  TRIPLET=x64-linux-dynamic ;;
-  aarch64) TRIPLET=arm64-linux-dynamic ;;
-  *) echo "unsupported arch $ARCH"; exit 1 ;;
+case "$OS-$ARCH" in
+  Linux-x86_64)   TRIPLET=x64-linux-dynamic ;;
+  Linux-aarch64)  TRIPLET=arm64-linux-dynamic ;;
+  Darwin-x86_64)  TRIPLET=x64-osx-dynamic ;;
+  Darwin-arm64)   TRIPLET=arm64-osx-dynamic ;;
+  *) echo "unsupported $OS-$ARCH"; exit 1 ;;
 esac
+NPROC="$( (nproc 2>/dev/null) || sysctl -n hw.ncpu )"
+# vcpkg's thrift port (Arrow's dep) invokes bison with --file-prefix-map (bison
+# >= 3.7). Both distros below ship something older, so we ensure a new bison.
+NEED_BISON=1
 
-echo "Installing vcpkg build prerequisites..."
-# flex+bison are needed by vcpkg's thrift port (Arrow's dep).
-yum install -y zip unzip tar curl git perl flex bison m4 ninja-build >/dev/null 2>&1 || \
-  yum install -y zip unzip tar curl git perl flex bison m4 >/dev/null 2>&1
+echo "Installing build prerequisites for $OS..."
+if [ "$OS" = "Linux" ]; then
+  yum install -y zip unzip tar curl git perl flex bison m4 ninja-build >/dev/null 2>&1 || \
+    yum install -y zip unzip tar curl git perl flex bison m4 >/dev/null 2>&1
+  bison --version 2>/dev/null | head -1 | grep -qE '3\.(7|8|9|[1-9][0-9])' && NEED_BISON=0
+else
+  export HOMEBREW_NO_AUTO_UPDATE=1
+  brew install autoconf automake libtool pkg-config ninja flex bison >/dev/null 2>&1 || true
+  # brew bison/flex are keg-only; put them first on PATH (newer than Apple's).
+  export PATH="$(brew --prefix bison)/bin:$(brew --prefix flex)/bin:$PATH"
+  NEED_BISON=0
+fi
 
-# AlmaLinux 8 (manylinux_2_28) ships bison 3.0, but vcpkg's thrift port invokes
-# bison with --file-prefix-map (needs >= 3.7). Build a newer bison if needed; it
-# installs to /usr/local/bin, which precedes /usr/bin so cmake's FindBISON uses it.
-if ! bison --version 2>/dev/null | head -1 | grep -qE '3\.(7|8|9|[1-9][0-9])'; then
+if [ "$NEED_BISON" = "1" ]; then
   echo "Building bison 3.8.2 (system bison too old for thrift)..."
   env -u LD_LIBRARY_PATH curl -fsSL https://ftp.gnu.org/gnu/bison/bison-3.8.2.tar.gz -o bison.tar.gz
   tar xzf bison.tar.gz
-  (cd bison-3.8.2 && ./configure --prefix=/usr/local >/dev/null && make -j"$(nproc)" >/dev/null && make install >/dev/null)
+  (cd bison-3.8.2 && ./configure --prefix=/usr/local >/dev/null && make -j"$NPROC" >/dev/null && make install >/dev/null)
   hash -r
-  bison --version | head -1
 fi
 command -v ninja >/dev/null 2>&1 || pip install ninja >/dev/null 2>&1 || true
 
 echo "Bootstrapping vcpkg..."
-export VCPKG_ROOT=/opt/vcpkg
+export VCPKG_ROOT="${VCPKG_ROOT:-$PROJECT/vcpkg}"
 if [ ! -x "$VCPKG_ROOT/vcpkg" ]; then
-  # Full clone (not --depth 1): vcpkg must be able to `git show` the manifest's
+  # Full clone (not --depth 1): vcpkg must `git show` the manifest's
   # builtin-baseline commit, which is older than current master HEAD.
   git clone https://github.com/microsoft/vcpkg "$VCPKG_ROOT"
   "$VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics
 fi
 export VCPKG_DEFAULT_TRIPLET="$TRIPLET"
-export VCPKG_INSTALLED="$VCPKG_ROOT/installed/$TRIPLET"
+VCPKG_INSTALLED="$VCPKG_ROOT/installed/$TRIPLET"
 
 echo "Installing C deps via vcpkg ($TRIPLET) from ci/vcpkg.json..."
 if ! "$VCPKG_ROOT/vcpkg" install \
@@ -57,19 +71,35 @@ if ! "$VCPKG_ROOT/vcpkg" install \
     --x-install-root="$VCPKG_ROOT/installed" \
     --triplet "$TRIPLET"; then
   echo "=== vcpkg install failed; dumping recent port build logs ==="
-  find "$VCPKG_ROOT/buildtrees" -name "*-err.log" -o -name "*-out.log" 2>/dev/null \
+  find "$VCPKG_ROOT/buildtrees" \( -name "*-err.log" -o -name "*-out.log" \) 2>/dev/null \
     | xargs ls -t 2>/dev/null | head -4 \
     | while read -r f; do echo "### $f"; tail -50 "$f"; echo; done
   exit 1
 fi
 
+# Stage all deps into $PREFIX so libgdal + its deps + data live in one tree.
+echo "Staging vcpkg deps into $PREFIX..."
+mkdir -p "$PREFIX"
+for d in lib include share bin; do
+  [ -d "$VCPKG_INSTALLED/$d" ] && cp -a "$VCPKG_INSTALLED/$d/." "$PREFIX/$d/" 2>/dev/null || true
+done
+
 echo "Downloading GDAL ${GDAL_VERSION} source..."
-# Clear LD_LIBRARY_PATH for this curl: the workflow puts vcpkg's lib dir on it,
-# and vcpkg's libcurl (built without all protocols) would otherwise be loaded by
-# the system curl and fail with "feature not found" (error 4).
-env -u LD_LIBRARY_PATH curl -fsSL "https://download.osgeo.org/gdal/${GDAL_VERSION}/gdal-${GDAL_VERSION}.tar.gz" -o gdal-full.tar.gz
+# Clear LD/DYLD library path for this curl: the workflow puts vcpkg's lib dir on
+# it, and vcpkg's libcurl (built without all protocols) would shadow the system
+# curl and fail with "feature not found" (error 4).
+env -u LD_LIBRARY_PATH -u DYLD_LIBRARY_PATH curl -fsSL \
+  "https://download.osgeo.org/gdal/${GDAL_VERSION}/gdal-${GDAL_VERSION}.tar.gz" -o gdal-full.tar.gz
 tar xzf gdal-full.tar.gz
 cd "gdal-${GDAL_VERSION}"
+
+OSX_FLAGS=()
+if [ "$OS" = "Darwin" ]; then
+  OSX_FLAGS=(
+    -DCMAKE_OSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET}"
+    -DCMAKE_OSX_ARCHITECTURES="${CMAKE_OSX_ARCHITECTURES}"
+  )
+fi
 
 echo "Building libgdal ${GDAL_VERSION} against the vcpkg deps..."
 cmake -S . -B build -G Ninja \
@@ -78,6 +108,7 @@ cmake -S . -B build -G Ninja \
     -DVCPKG_TARGET_TRIPLET="$TRIPLET" \
     -DCMAKE_INSTALL_PREFIX="$PREFIX" \
     -DCMAKE_INSTALL_LIBDIR=lib \
+    "${OSX_FLAGS[@]}" \
     -DBUILD_SHARED_LIBS=ON \
     -DBUILD_PYTHON_BINDINGS=OFF \
     -DBUILD_JAVA_BINDINGS=OFF \
@@ -107,11 +138,8 @@ cmake -S . -B build -G Ninja \
     -DGDAL_ENABLE_DRIVER_ZARR=ON \
     -DGDAL_USE_EXPAT=ON
 
-cmake --build build -j"$(nproc)"
+cmake --build build -j"$NPROC"
 cmake --install build
 
 echo "libgdal built. Version:"
 "$PREFIX/bin/gdal-config" --version
-# Expose the vcpkg dep tree at a fixed, arch-independent path so the workflow's
-# env/repair commands don't need to hardcode the triplet (x64 vs arm64).
-ln -sfn "$VCPKG_INSTALLED" /opt/gdaldeps-deps
