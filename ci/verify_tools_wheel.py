@@ -85,8 +85,11 @@ def main():
         py = bindir / ("python.exe" if os.name == "nt" else "python")
 
         # install base first (osgeo), then tools (osgeo_tools + launchers).
+        # numpy is needed by step 3's mk.py (gdal_array round-trip into a
+        # GTiff that the CLI then reads); the isolated venv has no site
+        # packages, so install it explicitly.
         subprocess.run([str(py), "-m", "pip", "install", "-q",
-                        base, tools], check=True)
+                        "numpy", base, tools], check=True)
 
         # The launchers were installed into the venv's scripts dir + are on PATH
         # when the venv is activated. We invoke them by absolute path here.
