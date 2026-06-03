@@ -71,6 +71,6 @@ PY
 # resolves {project} when package-dir is set.
 mkdir -p "${OUT_DIR}/ci" "${OUT_DIR}/tests"
 cp ci/patch_wheel.py ci/runtime_shim.py "${OUT_DIR}/ci/"
-cp tests/test_smoke.py "${OUT_DIR}/tests/"
+cp tests/test_smoke.py tests/test_functional.py "${OUT_DIR}/tests/"
 
 echo "Done. Package source ready at ${OUT_DIR}/ (setup.py present: $([ -f ${OUT_DIR}/setup.py ] && echo yes || echo NO))"
