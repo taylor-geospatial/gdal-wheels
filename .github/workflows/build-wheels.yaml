@@ -57,7 +57,7 @@ jobs:
         shell: bash
         run: |
           FULL='[{"os":"ubuntu-22.04","arch":"x86_64"},{"os":"ubuntu-22.04-arm","arch":"aarch64"},{"os":"macos-15-intel","arch":"x86_64","cmake_osx_architectures":"x86_64","macos_deployment_target":"15.0"},{"os":"macos-14","arch":"arm64","cmake_osx_architectures":"arm64","macos_deployment_target":"14.0"},{"os":"windows-2022","arch":"AMD64","triplet":"x64-windows","msvc_arch":"x64"},{"os":"windows-11-arm","arch":"ARM64","triplet":"arm64-windows","msvc_arch":"ARM64"}]'
-          DEV='[{"os":"ubuntu-22.04","arch":"x86_64"}]'
+          DEV='[{"os":"ubuntu-22.04","arch":"x86_64"},{"os":"windows-2022","arch":"AMD64","triplet":"x64-windows","msvc_arch":"x64"}]'
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] || [ "${{ github.event_name }}" = "release" ] || printf '%s' "${{ github.event.head_commit.message }}" | grep -q '\[full ci\]'; then
             echo "matrix=$FULL" >> "$GITHUB_OUTPUT"; echo "Selected FULL matrix"
           else
@@ -128,10 +128,14 @@ jobs:
           CIBW_ARCHS: ${{ matrix.arch }}
 
           # --- Build-time discovery of libgdal ---
-          # Linux: config.sh installs into /usr/local; gdal-config is on PATH.
+          # Linux (hybrid via vcpkg): our libgdal in /opt/gdaldeps, its C deps in
+          # the vcpkg install tree. gdal-config on PATH; both lib dirs on the
+          # library path so the bindings link and auditwheel resolves deps.
           CIBW_ENVIRONMENT_LINUX: >-
             GDAL_VERSION=${{ env.GDAL_VERSION }}
-            BUILD_PREFIX=/usr/local
+            BUILD_PREFIX=/opt/gdaldeps
+            PATH=/opt/gdaldeps/bin:$PATH
+            LD_LIBRARY_PATH=/opt/gdaldeps/lib:/opt/gdaldeps/lib64:$LD_LIBRARY_PATH
           # macOS: config.sh installs into gdal_libs; put its bin on PATH so the
           # GDAL setup.py finds gdal-config (it calls the bare name, no env var).
           CIBW_ENVIRONMENT_MACOS: >-
@@ -154,12 +158,9 @@ jobs:
 
           # Build libgdal + the full C dependency chain from source (Linux/macOS).
           CIBW_BEFORE_ALL_LINUX: |
-            yum install -y wget cmake perl-core zlib-devel ImageMagick bzip2 flex bison
-            cmake --version
-            bash ./ci/config.sh
+            bash ./ci/build_gdal_hybrid.sh "$GDAL_VERSION" /opt/gdaldeps
           CIBW_BEFORE_ALL_MACOS: |
-            HOMEBREW_NO_AUTO_UPDATE=1 brew install autoconf automake libtool coreutils cmake wget
-            bash ./ci/config.sh
+            bash ./ci/build_gdal_hybrid.sh "$GDAL_VERSION" "${GITHUB_WORKSPACE}/gdal_libs"
           CIBW_BEFORE_BUILD_WINDOWS: pip install delvewheel
 
           # Repair (vendor shared libs) then inject data + runtime shim.
@@ -168,22 +169,27 @@ jobs:
           # same job for every Python, and a glob over a shared dir would re-patch
           # (and re-emit) wheels from earlier Python builds -> "already generated".
           CIBW_REPAIR_WHEEL_COMMAND_LINUX: >-
-            export 'LD_LIBRARY_PATH=/usr/local/lib64:/usr/local/lib:$LD_LIBRARY_PATH' &&
+            export 'LD_LIBRARY_PATH=/opt/gdaldeps/lib64:/opt/gdaldeps/lib:$LD_LIBRARY_PATH' &&
             rm -rf /tmp/repaired && mkdir -p /tmp/repaired &&
             auditwheel repair -w /tmp/repaired {wheel} &&
             python {project}/ci/patch_wheel.py "/tmp/repaired/*.whl" {dest_dir}
-            --gdal-data /usr/local/share/gdal --proj-data /usr/local/share/proj
+            --gdal-data /opt/gdaldeps/share/gdal --proj-data /opt/gdaldeps/share/proj
+            --licenses-src /opt/gdaldeps
           CIBW_REPAIR_WHEEL_COMMAND_MACOS: >-
             export DYLD_LIBRARY_PATH=${GITHUB_WORKSPACE}/gdal_libs/lib:$DYLD_LIBRARY_PATH &&
             rm -rf /tmp/repaired && mkdir -p /tmp/repaired &&
             delocate-wheel --require-archs {delocate_archs} -w /tmp/repaired -v {wheel} &&
             python {project}/ci/patch_wheel.py "/tmp/repaired/*.whl" {dest_dir}
             --gdal-data ${GITHUB_WORKSPACE}/gdal_libs/share/gdal --proj-data ${GITHUB_WORKSPACE}/gdal_libs/share/proj
+            --licenses-src ${GITHUB_WORKSPACE}/gdal_libs
+          # NB: no bash-isms here -- cibuildwheel runs the Windows repair in cmd.
+          # cibuildwheel pre-cleans {dest_dir} per wheel, so delvewheel writes
+          # there directly and patch_wheel patches it in place (one .whl).
           CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: >-
-            rm -rf /c/repaired && mkdir -p /c/repaired &&
-            delvewheel repair --add-path "C:/gdalinst/bin;C:/vcpkg/installed/${{ matrix.triplet }}/bin" -w C:/repaired {wheel} &&
-            python {project}/ci/patch_wheel.py "C:/repaired/*.whl" {dest_dir}
+            delvewheel repair --add-path "C:/gdalinst/bin;C:/vcpkg/installed/${{ matrix.triplet }}/bin" -w {dest_dir} {wheel} &&
+            python {project}/ci/patch_wheel.py "{dest_dir}/*.whl" {dest_dir}
             --gdal-data C:/gdalinst/share/gdal --proj-data C:/vcpkg/installed/${{ matrix.triplet }}/share/proj
+            --licenses-src C:/vcpkg/installed/${{ matrix.triplet }}
 
           # Smoke-test every wheel before it leaves the build.
           CIBW_TEST_REQUIRES: numpy

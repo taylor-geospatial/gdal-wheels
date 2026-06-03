@@ -37,7 +37,7 @@ def _record_hash(data):
     return f"sha256={b64}"
 
 
-def patch(wheel_path, dest_dir, gdal_data, proj_data):
+def patch(wheel_path, dest_dir, gdal_data, proj_data, licenses_src=None):
     wheel_path = Path(wheel_path)
     dest_dir = Path(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -59,6 +59,19 @@ def patch(wheel_path, dest_dir, gdal_data, proj_data):
             shutil.rmtree(dst, ignore_errors=True)
             shutil.copytree(src, dst)
             print(f"  injected {name} from {src}")
+
+        # 2b: harvest bundled-dependency license files (vcpkg writes one
+        # <prefix>/share/<port>/copyright per dep) into osgeo/licenses/, so the
+        # wheel ships the licenses of every vendored library (BSD/MIT/LGPL/...).
+        if licenses_src:
+            licdir = osgeo / "licenses"
+            licdir.mkdir(exist_ok=True)
+            count = 0
+            for cp in glob.glob(os.path.join(licenses_src, "share", "*", "copyright")):
+                port = os.path.basename(os.path.dirname(cp))
+                shutil.copy(cp, licdir / f"{port}.txt")
+                count += 1
+            print(f"  harvested {count} dependency license files into osgeo/licenses/")
 
         # 3: prepend the runtime shim to osgeo/__init__.py.
         init = osgeo / "__init__.py"
@@ -98,6 +111,8 @@ def main():
     ap.add_argument("dest_dir", help="output directory")
     ap.add_argument("--gdal-data", required=True)
     ap.add_argument("--proj-data", required=True)
+    ap.add_argument("--licenses-src", default=None,
+                    help="prefix containing share/<port>/copyright files to bundle")
     args = ap.parse_args()
 
     matches = glob.glob(args.wheel)
@@ -105,7 +120,7 @@ def main():
         sys.exit(f"ERROR: no wheel matched {args.wheel}")
     for w in matches:
         print(f"Patching {os.path.basename(w)} ...")
-        patch(w, args.dest_dir, args.gdal_data, args.proj_data)
+        patch(w, args.dest_dir, args.gdal_data, args.proj_data, args.licenses_src)
 
 
 if __name__ == "__main__":
