@@ -58,6 +58,34 @@ def _venv_bin(venv_dir):
     return Path(venv_dir) / ("Scripts" if os.name == "nt" else "bin")
 
 
+def _diagnose_unix(py, launcher, env):
+    """On a tool crash (esp. SIGSEGV), dump the loader's view of the real binary
+    so the failure self-explains: NEEDED/RUNPATH, the resolved lib closure, and
+    an LD_DEBUG trace whose tail shows the last lib op before the crash."""
+    print("---- tools-wheel crash diagnostics ----", flush=True)
+    pkg = subprocess.run(
+        [str(py), "-c",
+         "import os,osgeo_tools;print(os.path.dirname(osgeo_tools.__file__))"],
+        capture_output=True, text=True).stdout.strip()
+    app = os.path.basename(launcher)
+    real = os.path.join(pkg, "bin", app)
+    print(f"pkg={pkg}\nreal binary={real}  exists={os.path.exists(real)}")
+    for cmd in (["file", real],
+                ["readelf", "-d", real],
+                ["ldd", real]):
+        try:
+            out = subprocess.run(cmd, capture_output=True, text=True)
+            print(f"\n$ {' '.join(cmd)}\n{out.stdout}{out.stderr}", flush=True)
+        except FileNotFoundError:
+            print(f"({cmd[0]} not available)")
+    dbg = subprocess.run([real, "--version"],
+                         env={**env, "LD_DEBUG": "libs,versions,bindings"},
+                         capture_output=True, text=True)
+    tail = "\n".join(dbg.stderr.splitlines()[-60:])
+    print(f"\n$ LD_DEBUG=libs,versions,bindings {app} --version  (rc={dbg.returncode})\n{tail}")
+    print("---- end diagnostics ----", flush=True)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("base_wheelhouse")
@@ -108,6 +136,8 @@ def main():
                                capture_output=True, text=True)
             print(f"$ {t} --version\n{r.stdout.strip() or r.stderr.strip()}")
             if r.returncode != 0:
+                if os.name != "nt":
+                    _diagnose_unix(py, tool(t), env)
                 sys.exit(f"ERROR: {t} --version failed (rc={r.returncode}):\n{r.stderr}")
             if "GDAL" not in (r.stdout + r.stderr):
                 sys.exit(f"ERROR: {t} --version did not report GDAL")
