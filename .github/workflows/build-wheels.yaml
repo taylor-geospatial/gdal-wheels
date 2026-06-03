@@ -92,7 +92,7 @@ jobs:
 
       # --- Windows-only: provide libgdal via vcpkg (no from-source on MSVC) ---
       - name: Activate MSVC
-        uses: ilammy/msvc-dev-cmd@v1.13.0
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756  # v1.13.0
         with:
            arch: ${{ matrix.msvc_arch }}
         if: ${{ matrix.msvc_arch }}
@@ -236,4 +236,9 @@ jobs:
           pattern: wheels-*
           merge-multiple: true
           path: dist
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # release/v1
+        with:
+          # PEP 740: sign + publish provenance attestations to PyPI via Trusted
+          # Publishing (OIDC, no stored token). Requires the PyPI Trusted Publisher
+          # to be configured first — see SECURITY.md.
+          attestations: true
