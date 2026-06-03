@@ -68,6 +68,10 @@ jobs:
     needs: setup
     name: ${{ matrix.arch }} wheels on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      id-token: write        # SLSA build-provenance attestation (sign the wheels)
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
@@ -205,6 +209,15 @@ jobs:
         with:
           name: wheels-${{ matrix.os }}-${{ matrix.arch }}
           path: ./wheelhouse/*.whl
+
+      # SLSA build provenance: cryptographically attest each wheel was built by
+      # this workflow (verifiable with `gh attestation verify <wheel>`). Lets
+      # consumers trust the binary's origin regardless of who/what authored the CI.
+      - name: Attest wheel build provenance
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: ./wheelhouse/*.whl
 
   publish:
     name: Publish to PyPI
