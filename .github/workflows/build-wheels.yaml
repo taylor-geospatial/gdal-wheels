@@ -107,7 +107,17 @@ jobs:
         env:
           VCPKG_DEFAULT_TRIPLET: ${{ matrix.triplet }}
         run: |
-          vcpkg install --feature-flags="versions,manifests" --x-manifest-root=$Env:GITHUB_WORKSPACE/ci --x-install-root=$Env:VCPKG_INSTALLATION_ROOT/installed
+          # Retry transient github.com download flakes (curl 6/7) -- vcpkg
+          # restores already-built ports from cache, so retries only re-fetch
+          # what failed. Mirrors the Linux/macOS retry in build_gdal_hybrid.sh.
+          $ok = $false
+          foreach ($attempt in 1..3) {
+            vcpkg install --feature-flags="versions,manifests" --x-manifest-root=$Env:GITHUB_WORKSPACE/ci --x-install-root=$Env:VCPKG_INSTALLATION_ROOT/installed
+            if ($LASTEXITCODE -eq 0) { $ok = $true; break }
+            Write-Host "=== vcpkg install attempt $attempt/3 failed; backing off then retrying ==="
+            Start-Sleep -Seconds ($attempt * 20)
+          }
+          if (-not $ok) { exit 1 }
         shell: pwsh
         if: ${{ matrix.msvc_arch }}
 
