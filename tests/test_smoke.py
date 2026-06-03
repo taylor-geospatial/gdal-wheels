@@ -8,6 +8,7 @@ bundled GDAL_DATA/PROJ_DATA resolve, and numpy array support is present.
 Exits non-zero on any failure so a broken wheel never ships.
 """
 
+import os
 import sys
 
 
