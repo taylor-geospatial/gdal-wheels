@@ -26,6 +26,33 @@ def _newest(pattern):
     return matches[-1] if matches else None
 
 
+def _pick_base_wheel(wheelhouse):
+    """Pick a base (osgeo) wheel installable by the CURRENT interpreter.
+
+    cibuildwheel emits one base wheel per Python (cp312/cp313/cp313t/cp314/
+    cp314t). The verify step runs under a single interpreter (3.12), so a plain
+    "newest" pick lands on the cp314t free-threaded wheel and pip rejects it
+    ("not a supported wheel on this platform"). Match the running interpreter's
+    cpXY[t] tag instead; fall back to newest only if nothing matches.
+    """
+    import sysconfig as _sc
+
+    matches = glob.glob(os.path.join(wheelhouse, "*.whl"))
+    if not matches:
+        return None
+    free_threaded = bool(_sc.get_config_var("Py_GIL_DISABLED"))
+    tag = "cp{}{}{}".format(
+        sys.version_info[0], sys.version_info[1], "t" if free_threaded else ""
+    )
+    # exact interpreter tag, e.g. "cp312-" (the trailing dash avoids matching
+    # cp312t when we want cp312, and cp31* prefixes).
+    want = f"{tag}-"
+    compatible = [m for m in matches if want in os.path.basename(m)]
+    if compatible:
+        return sorted(compatible, key=os.path.getmtime)[-1]
+    return _newest(os.path.join(wheelhouse, "*.whl"))
+
+
 def _venv_bin(venv_dir):
     # scripts dir where .data/scripts/ launchers land
     return Path(venv_dir) / ("Scripts" if os.name == "nt" else "bin")
@@ -38,7 +65,7 @@ def main():
     ap.add_argument("--report", default=None)
     args = ap.parse_args()
 
-    base = _newest(os.path.join(args.base_wheelhouse, "*.whl"))
+    base = _pick_base_wheel(args.base_wheelhouse)
     tools = _newest(os.path.join(args.tools_wheelhouse, "*.whl"))
     if not base:
         sys.exit(f"ERROR: no base wheel in {args.base_wheelhouse}")
