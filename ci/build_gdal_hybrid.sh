@@ -76,12 +76,26 @@ export VCPKG_DEFAULT_TRIPLET="$TRIPLET"
 VCPKG_INSTALLED="$VCPKG_ROOT/installed/$TRIPLET"
 
 echo "Installing C deps via vcpkg ($TRIPLET) from ci/vcpkg.json..."
-if ! "$VCPKG_ROOT/vcpkg" install \
+vcpkg_install() {
+  "$VCPKG_ROOT/vcpkg" install \
     --feature-flags="versions,manifests" \
     --x-manifest-root="$PROJECT/ci" \
     --x-install-root="$VCPKG_ROOT/installed" \
-    --triplet "$TRIPLET"; then
-  echo "=== vcpkg install failed; dumping recent port build logs ==="
+    --triplet "$TRIPLET"
+}
+# vcpkg refuses to retry transient github.com download failures (curl errors 6/7
+# -- DNS / connection-refused while fetching boost/* tarballs), which kills the
+# whole ~40-min build over a momentary network blip. Retry the install: every
+# port already built/downloaded is restored from the binary cache + buildtrees,
+# so each attempt only re-fetches what genuinely failed.
+vcpkg_ok=0
+for attempt in 1 2 3; do
+  if vcpkg_install; then vcpkg_ok=1; break; fi
+  echo "=== vcpkg install attempt ${attempt}/3 failed; backing off then retrying ==="
+  sleep $((attempt * 20))
+done
+if [ "$vcpkg_ok" -ne 1 ]; then
+  echo "=== vcpkg install failed after 3 attempts; dumping recent port build logs ==="
   find "$VCPKG_ROOT/buildtrees" \( -name "*-err.log" -o -name "*-out.log" \) 2>/dev/null \
     | xargs ls -t 2>/dev/null | head -4 \
     | while read -r f; do echo "### $f"; tail -50 "$f"; echo; done
@@ -125,7 +139,7 @@ cmake -S . -B build -G Ninja \
     -DBUILD_PYTHON_BINDINGS=OFF \
     -DBUILD_JAVA_BINDINGS=OFF \
     -DBUILD_CSHARP_BINDINGS=OFF \
-    -DBUILD_APPS=OFF \
+    -DBUILD_APPS="${GDAL_BUILD_APPS:-OFF}" \
     -DGDAL_USE_JXL=OFF \
     -DGDAL_BUILD_OPTIONAL_DRIVERS=ON \
     -DOGR_BUILD_OPTIONAL_DRIVERS=ON \

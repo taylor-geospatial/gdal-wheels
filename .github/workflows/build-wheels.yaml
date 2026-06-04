@@ -57,8 +57,8 @@ jobs:
       - id: pick
         shell: bash
         run: |
-          FULL='[{"os":"ubuntu-22.04","arch":"x86_64"},{"os":"ubuntu-22.04-arm","arch":"aarch64"},{"os":"macos-15-intel","arch":"x86_64","cmake_osx_architectures":"x86_64","macos_deployment_target":"15.0"},{"os":"macos-14","arch":"arm64","cmake_osx_architectures":"arm64","macos_deployment_target":"14.0"},{"os":"windows-2022","arch":"AMD64","triplet":"x64-windows","msvc_arch":"x64"},{"os":"windows-11-arm","arch":"ARM64","triplet":"arm64-windows","msvc_arch":"ARM64"}]'
-          DEV='[{"os":"ubuntu-22.04","arch":"x86_64"},{"os":"windows-2022","arch":"AMD64","triplet":"x64-windows","msvc_arch":"x64"}]'
+          FULL='[{"os":"ubuntu-22.04","arch":"x86_64","tools_tag":"manylinux_2_28_x86_64"},{"os":"ubuntu-22.04-arm","arch":"aarch64","tools_tag":"manylinux_2_28_aarch64"},{"os":"macos-15-intel","arch":"x86_64","cmake_osx_architectures":"x86_64","macos_deployment_target":"15.0","tools_tag":"macosx_15_0_x86_64"},{"os":"macos-14","arch":"arm64","cmake_osx_architectures":"arm64","macos_deployment_target":"14.0","tools_tag":"macosx_14_0_arm64"},{"os":"windows-2022","arch":"AMD64","triplet":"x64-windows","msvc_arch":"x64","tools_tag":"win_amd64"},{"os":"windows-11-arm","arch":"ARM64","triplet":"arm64-windows","msvc_arch":"ARM64","tools_tag":"win_arm64"}]'
+          DEV='[{"os":"ubuntu-22.04","arch":"x86_64","tools_tag":"manylinux_2_28_x86_64"},{"os":"windows-2022","arch":"AMD64","triplet":"x64-windows","msvc_arch":"x64","tools_tag":"win_amd64"}]'
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] || [ "${{ github.event_name }}" = "release" ] || printf '%s' "${{ github.event.head_commit.message }}" | grep -q '\[full ci\]'; then
             echo "matrix=$FULL" >> "$GITHUB_OUTPUT"; echo "Selected FULL matrix"
           else
@@ -112,14 +112,34 @@ jobs:
         env:
           VCPKG_DEFAULT_TRIPLET: ${{ matrix.triplet }}
         run: |
-          vcpkg install --feature-flags="versions,manifests" --x-manifest-root=$Env:GITHUB_WORKSPACE/ci --x-install-root=$Env:VCPKG_INSTALLATION_ROOT/installed
+          # Retry transient github.com download flakes (curl 6/7) -- vcpkg
+          # restores already-built ports from cache, so retries only re-fetch
+          # what failed. Mirrors the Linux/macOS retry in build_gdal_hybrid.sh.
+          $ok = $false
+          foreach ($attempt in 1..3) {
+            vcpkg install --feature-flags="versions,manifests" --x-manifest-root=$Env:GITHUB_WORKSPACE/ci --x-install-root=$Env:VCPKG_INSTALLATION_ROOT/installed
+            if ($LASTEXITCODE -eq 0) { $ok = $true; break }
+            Write-Host "=== vcpkg install attempt $attempt/3 failed; backing off then retrying ==="
+            Start-Sleep -Seconds ($attempt * 20)
+          }
+          if (-not $ok) { exit 1 }
         shell: pwsh
         if: ${{ matrix.msvc_arch }}
 
       - name: Build libgdal 3.13.0 from source (Windows, MSVC + vcpkg deps)
+        env:
+          GDAL_BUILD_APPS: 'ON'  # also compile the C CLI tools into C:/gdalinst/bin
         run: |
           python -m pip install ninja
           bash ci/build_gdal_windows.sh "$GDAL_VERSION" "${{ matrix.triplet }}" "C:/gdalinst"
+        shell: bash
+        if: ${{ matrix.msvc_arch }}
+
+      - name: Assemble gdal-wheels-tools wheel (Windows)
+        run: |
+          python ci/build_tools_wheel.py "C:/gdalinst" "$GITHUB_WORKSPACE/tools_wheelhouse" \
+            --version "$GDAL_VERSION" --platform-tag "${{ matrix.tools_tag }}" \
+            --licenses-src "C:/vcpkg/installed/${{ matrix.triplet }}"
         shell: bash
         if: ${{ matrix.msvc_arch }}
 
@@ -138,13 +158,16 @@ jobs:
           # library path so the bindings link and auditwheel resolves deps.
           CIBW_ENVIRONMENT_LINUX: >-
             GDAL_VERSION=${{ env.GDAL_VERSION }}
+            TOOLS_PLATFORM_TAG=${{ matrix.tools_tag }}
             BUILD_PREFIX=/opt/gdaldeps
             PATH=/opt/gdaldeps/bin:$PATH
             LD_LIBRARY_PATH=/opt/gdaldeps/lib:/opt/gdaldeps/lib64:$LD_LIBRARY_PATH
+            HOST_TOOLS_WHEELHOUSE=/host${{ github.workspace }}/tools_wheelhouse
           # macOS (hybrid): build installs into gdal_libs; put its bin on PATH so the
           # GDAL setup.py finds gdal-config (it calls the bare name, no env var).
           CIBW_ENVIRONMENT_MACOS: >-
             GDAL_VERSION=${{ env.GDAL_VERSION }}
+            TOOLS_PLATFORM_TAG=${{ matrix.tools_tag }}
             CMAKE_OSX_ARCHITECTURES='${{ matrix.cmake_osx_architectures }}'
             MACOSX_DEPLOYMENT_TARGET=${{ matrix.macos_deployment_target }}
             BUILD_PREFIX=${GITHUB_WORKSPACE}/gdal_libs
@@ -162,10 +185,30 @@ jobs:
             LIB="C:/gdalinst/lib;$LIB"
 
           # Build libgdal + the full C dependency chain from source (Linux/macOS).
+          # GDAL_BUILD_APPS=ON additionally compiles the GDAL C CLI tools into the
+          # install prefix's bin/. They never enter the base wheel (patch_wheel
+          # only copies osgeo/ + data); a separate step assembles them into the
+          # opt-in gdal-wheels-tools wheel. Building them here reuses the single
+          # libgdal build instead of compiling libgdal twice.
+          # NB: CIBW_BEFORE_ALL runs INSIDE the manylinux container, whose CWD is
+          # the copied project (/project). Writes there do NOT propagate to the
+          # host runner. cibuildwheel mounts the host filesystem at /host, so we
+          # write the tools wheel to the host's $GITHUB_WORKSPACE/tools_wheelhouse
+          # (passed in as HOST_TOOLS_WHEELHOUSE) where the host-side verify step
+          # can find it.
           CIBW_BEFORE_ALL_LINUX: |
-            bash ./ci/build_gdal_hybrid.sh "$GDAL_VERSION" /opt/gdaldeps
+            GDAL_BUILD_APPS=ON bash ./ci/build_gdal_hybrid.sh "$GDAL_VERSION" /opt/gdaldeps
+            command -v patchelf >/dev/null 2>&1 || yum install -y patchelf >/dev/null 2>&1 || python3 -m pip install -q patchelf
+            export LD_LIBRARY_PATH=/opt/gdaldeps/lib64:/opt/gdaldeps/lib:$LD_LIBRARY_PATH
+            mkdir -p "${HOST_TOOLS_WHEELHOUSE}"
+            python3 ./ci/build_tools_wheel.py /opt/gdaldeps "${HOST_TOOLS_WHEELHOUSE}" \
+              --version "$GDAL_VERSION" --platform-tag "${TOOLS_PLATFORM_TAG}" \
+              --licenses-src /opt/gdaldeps
           CIBW_BEFORE_ALL_MACOS: |
-            bash ./ci/build_gdal_hybrid.sh "$GDAL_VERSION" "${GITHUB_WORKSPACE}/gdal_libs"
+            GDAL_BUILD_APPS=ON bash ./ci/build_gdal_hybrid.sh "$GDAL_VERSION" "${GITHUB_WORKSPACE}/gdal_libs"
+            python3 ./ci/build_tools_wheel.py "${GITHUB_WORKSPACE}/gdal_libs" "${GITHUB_WORKSPACE}/tools_wheelhouse" \
+              --version "$GDAL_VERSION" --platform-tag "${TOOLS_PLATFORM_TAG}" \
+              --licenses-src "${GITHUB_WORKSPACE}/gdal_libs"
           CIBW_BEFORE_BUILD_WINDOWS: pip install delvewheel
 
           # Repair (vendor shared libs) then inject data + runtime shim.
@@ -205,11 +248,40 @@ jobs:
             python {project}/tests/test_smoke.py &&
             python -m pytest {project}/tests/test_functional.py -v
 
-      - name: Upload artifacts
+      # Verify the opt-in tools wheel: install base + tools into a clean venv,
+      # run gdalinfo/ogr2ogr/ogrinfo/gdalwarp --version, do a real GeoJSON->GPKG
+      # conversion, and gdalinfo a python-built GTiff. Also emits the per-platform
+      # size row (base vs tools vs total).
+      - name: Verify gdal-wheels-tools + size report
+        shell: bash
+        run: |
+          python -m pip install -q --upgrade pip
+          python ci/verify_tools_wheel.py ./wheelhouse "${GITHUB_WORKSPACE}/tools_wheelhouse" \
+            --report "${GITHUB_WORKSPACE}/size_row.md"
+          {
+            echo "### Wheel sizes — ${{ matrix.os }} ${{ matrix.arch }}"
+            echo ""
+            echo "| platform | base (MB) | tools (MB) | total (MB) |"
+            echo "|---|---|---|---|"
+            cat "${GITHUB_WORKSPACE}/size_row.md"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload base wheel artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: wheels-${{ matrix.os }}-${{ matrix.arch }}
           path: ./wheelhouse/*.whl
+
+      # always() so the tools wheel is retrievable even when the verify step
+      # above fails -- lets us pull the exact artifact and debug it natively.
+      - name: Upload tools wheel artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tools-wheels-${{ matrix.os }}-${{ matrix.arch }}
+          path: ./tools_wheelhouse/*.whl
+          if-no-files-found: ignore
 
       # SLSA build provenance: cryptographically attest each wheel was built by
       # this workflow (verifiable with `gh attestation verify <wheel>`). Lets
