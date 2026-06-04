@@ -69,6 +69,10 @@ jobs:
     needs: setup
     name: ${{ matrix.arch }} wheels on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      id-token: write        # SLSA build-provenance attestation (sign the wheels)
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
@@ -89,7 +93,7 @@ jobs:
 
       # --- Windows-only: provide libgdal via vcpkg (no from-source on MSVC) ---
       - name: Activate MSVC
-        uses: ilammy/msvc-dev-cmd@v1.13.0
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756  # v1.13.0
         with:
            arch: ${{ matrix.msvc_arch }}
         if: ${{ matrix.msvc_arch }}
@@ -207,6 +211,15 @@ jobs:
           name: wheels-${{ matrix.os }}-${{ matrix.arch }}
           path: ./wheelhouse/*.whl
 
+      # SLSA build provenance: cryptographically attest each wheel was built by
+      # this workflow (verifiable with `gh attestation verify <wheel>`). Lets
+      # consumers trust the binary's origin regardless of who/what authored the CI.
+      - name: Attest wheel build provenance
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: ./wheelhouse/*.whl
+
   publish:
     name: Publish to PyPI
     needs: [build_wheels]
@@ -224,4 +237,9 @@ jobs:
           pattern: wheels-*
           merge-multiple: true
           path: dist
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # release/v1
+        with:
+          # PEP 740: sign + publish provenance attestations to PyPI via Trusted
+          # Publishing (OIDC, no stored token). Requires the PyPI Trusted Publisher
+          # to be configured first — see SECURITY.md.
+          attestations: true
