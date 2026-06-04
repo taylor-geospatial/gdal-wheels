@@ -17,6 +17,16 @@ GDAL_VERSION="${1:?gdal version}"
 PREFIX="${2:?install prefix}"
 PROJECT="$(pwd)"
 
+# SHA256 pins for the downloads below (supply-chain integrity). Bump GDAL_SRC_SHA256
+# whenever GDAL_VERSION changes.
+GDAL_SRC_SHA256="1eb8c56a8cea4d3c733d90a719540c1aab981e4eb15e03057092e69b2935ae73"  # gdal 3.13.0
+BISON_SHA256="06c9e13bdf7eb24d4ceb6b59205a4f67c2c7e7213119644430fe82fbd14a0abb"     # bison 3.8.2
+
+verify_sha256() {  # <file> <expected>
+  echo "$2  $1" | { sha256sum -c - 2>/dev/null || shasum -a 256 -c -; } \
+    || { echo "SHA256 mismatch for $1"; exit 1; }
+}
+
 OS="$(uname -s)"
 ARCH="$(uname -m)"
 case "$OS-$ARCH" in
@@ -47,6 +57,7 @@ fi
 if [ "$NEED_BISON" = "1" ]; then
   echo "Building bison 3.8.2 (system bison too old for thrift)..."
   env -u LD_LIBRARY_PATH curl -fsSL https://ftp.gnu.org/gnu/bison/bison-3.8.2.tar.gz -o bison.tar.gz
+  verify_sha256 bison.tar.gz "$BISON_SHA256"
   tar xzf bison.tar.gz
   (cd bison-3.8.2 && ./configure --prefix=/usr/local >/dev/null && make -j"$NPROC" >/dev/null && make install >/dev/null)
   hash -r
@@ -90,6 +101,7 @@ echo "Downloading GDAL ${GDAL_VERSION} source..."
 # curl and fail with "feature not found" (error 4).
 env -u LD_LIBRARY_PATH -u DYLD_LIBRARY_PATH curl -fsSL \
   "https://download.osgeo.org/gdal/${GDAL_VERSION}/gdal-${GDAL_VERSION}.tar.gz" -o gdal-full.tar.gz
+verify_sha256 gdal-full.tar.gz "$GDAL_SRC_SHA256"
 tar xzf gdal-full.tar.gz
 cd "gdal-${GDAL_VERSION}"
 
