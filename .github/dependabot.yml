@@ -1,0 +1,11 @@
+version: 2
+updates:
+  # Keep the GitHub Actions we pin (cibuildwheel, checkout, scanners, ...) patched.
+  # NB: this covers our *workflow* actions, not the vendored C libraries — those
+  # are tracked by the Trivy/Grype/OSV scan in security.yml.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci

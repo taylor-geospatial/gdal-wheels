@@ -16,19 +16,21 @@ def _gw_setup():
     # Bundled data dirs (injected by ci/patch_wheel.py).
     _gdal_data = _gw_os.path.join(_here, "gdal_data")
     _proj_data = _gw_os.path.join(_here, "proj_data")
-    # Force the bundled paths so the wheel is genuinely self-contained: a stale
-    # GDAL_DATA/PROJ_LIB pointing at a *different* (system) GDAL/PROJ would
-    # otherwise win via setdefault and cause schema/CRS mismatches. Power users
-    # who must override can set GDAL_WHEELS_RESPECT_ENV=1.
-    _respect_env = _gw_os.environ.get("GDAL_WHEELS_RESPECT_ENV") == "1"
-    if _gw_os.path.isdir(_gdal_data) and not (_respect_env and _gw_os.environ.get("GDAL_DATA")):
-        _gw_os.environ["GDAL_DATA"] = _gdal_data
+    # Default: only set GDAL_DATA/PROJ_DATA if not already set, so importing this
+    # wheel does NOT clobber a co-installed rasterio/fiona/pyproj that set these
+    # first (clobbering can cause cross-package proj.db schema mismatches). A user
+    # who wants this wheel's bundled data to win can set GDAL_WHEELS_FORCE_DATA=1.
+    _force = _gw_os.environ.get("GDAL_WHEELS_FORCE_DATA") == "1"
+
+    def _set(var, val):
+        if _force or not _gw_os.environ.get(var):
+            _gw_os.environ[var] = val
+
+    if _gw_os.path.isdir(_gdal_data):
+        _set("GDAL_DATA", _gdal_data)
     if _gw_os.path.isdir(_proj_data):
-        # PROJ_DATA is current; PROJ_LIB is the pre-9.1 name. Set both.
-        if not (_respect_env and _gw_os.environ.get("PROJ_DATA")):
-            _gw_os.environ["PROJ_DATA"] = _proj_data
-        if not (_respect_env and _gw_os.environ.get("PROJ_LIB")):
-            _gw_os.environ["PROJ_LIB"] = _proj_data
+        _set("PROJ_DATA", _proj_data)   # PROJ_DATA is current; PROJ_LIB is pre-9.1
+        _set("PROJ_LIB", _proj_data)
     # Windows: register the vendored DLL directory that delvewheel created, and
     # keep the handle alive (see _gw_dll_dirs above).
     if _gw_os.name == "nt" and hasattr(_gw_os, "add_dll_directory"):

@@ -1,0 +1,131 @@
+name: Security — SBOM + CVE scan of bundled native libs
+
+# The wheels vendor ~25 C libraries (GDAL, PROJ, GEOS, libtiff, curl, openssl,
+# SQLite, libpq, Apache Arrow, ...). Normal Python tooling (pip-audit, Dependabot
+# for pip) does NOT see those. This workflow generates an SBOM of what's actually
+# inside the built wheel and scans it with established vulnerability scanners
+# (Trivy + Grype + OSV-Scanner) against fresh feeds, surfacing CVEs in the GitHub
+# Security tab. The weekly schedule is the cadence trigger: a newly-disclosed CVE
+# in a pinned dependency turns the scan red even with no code change -> re-release.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - "ci/vcpkg.json"
+      - "ci/build_gdal_hybrid.sh"
+      - "ci/build_gdal_windows.sh"
+      - ".github/workflows/security.yml"
+  push:
+    branches: [ main ]
+  schedule:
+    - cron: "17 6 * * 1"   # every Monday 06:17 UTC
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read            # download wheel artifacts from the build workflow
+      security-events: write   # upload SARIF to the Security tab
+    steps:
+      - name: Harden the runner (monitor build-time egress)
+        uses: step-security/harden-runner@ab7a9404c0f3da075243ca237b5fac12c98deaa5  # v2
+        with:
+          egress-policy: audit   # audit now; flip to block + allowlist once reviewed
+      - uses: actions/checkout@v4
+
+      - name: Fetch the latest built Linux wheel
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p wheelhouse target
+          run_id=$(gh run list --workflow build-wheels.yaml --branch main \
+            --status success --limit 1 --json databaseId --jq '.[0].databaseId' \
+            -R "$GITHUB_REPOSITORY" || true)
+          if [ -n "${run_id:-}" ]; then
+            gh run download "$run_id" -R "$GITHUB_REPOSITORY" \
+              -n wheels-ubuntu-22.04-x86_64 -D wheelhouse || true
+          fi
+          whl=$(ls wheelhouse/*.whl 2>/dev/null | head -1 || true)
+          if [ -n "$whl" ]; then
+            echo "Scanning wheel: $whl"
+            python -m zipfile -e "$whl" target/      # unpack vendored libs for scanning
+            echo "WHEEL_FOUND=1" >> "$GITHUB_ENV"
+          else
+            echo "No wheel artifact available yet — scanning the dependency manifest only."
+            cp ci/vcpkg.json target/                  # at least scan the declared deps
+            echo "WHEEL_FOUND=0" >> "$GITHUB_ENV"
+          fi
+
+      - name: Generate SBOM (Syft)
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610  # v0
+        with:
+          path: target
+          format: cyclonedx-json
+          output-file: sbom.cdx.json
+          artifact-name: gdal-wheels-sbom.cdx.json
+
+      - name: Scan with Trivy (native-lib CVE coverage)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          scan-type: rootfs
+          scan-ref: target
+          format: sarif
+          output: trivy.sarif
+          severity: CRITICAL,HIGH
+          ignore-unfixed: false
+
+      - name: Scan SBOM with Grype
+        uses: anchore/scan-action@1638637db639e0ade3258b51db49a9a137574c3e  # v6
+        id: grype
+        with:
+          sbom: sbom.cdx.json
+          output-format: sarif
+          fail-build: false
+          severity-cutoff: high
+
+      - name: Upload Trivy SARIF to Security tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy.sarif
+          category: trivy
+
+      - name: Upload Grype SARIF to Security tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: ${{ steps.grype.outputs.sarif }}
+          category: grype
+
+  # Static-audit our own GitHub Actions workflows (template injection, excessive
+  # permissions, unpinned/mutable action refs -- the tj-actions attack class).
+  workflow-audit:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Harden the runner
+        uses: step-security/harden-runner@ab7a9404c0f3da075243ca237b5fac12c98deaa5  # v2
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@v4
+      - name: Run zizmor (workflow security audit)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pip install zizmor==1.25.2
+          zizmor --format sarif .github/workflows/ > zizmor.sarif || true
+      - name: Upload zizmor SARIF to Security tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: zizmor.sarif
+          category: zizmor

@@ -43,5 +43,6 @@ ship a new GDAL.
 
 ## License
 
-MIT ([`LICENSE`](LICENSE)). `ci/config.sh` derives from rasterio (BSD-3) — see
+MIT ([`LICENSE`](LICENSE)). GDAL and the bundled C deps keep their own (permissive/
+BSD/MIT/LGPL) licenses, shipped inside the wheel at `osgeo/licenses/`. See
 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).

@@ -1,0 +1,43 @@
+name: Security — OpenSSF Scorecard
+
+# Grades the repo's security posture (branch protection, token permissions,
+# pinned dependencies, dangerous workflow patterns, ...) and surfaces findings in
+# the Security tab. Some checks (e.g. branch protection) require repo-admin
+# settings — see SECURITY.md for the operator setup that turns those green.
+
+on:
+  branch_protection_rule:
+  schedule:
+    - cron: "23 6 * * 1"   # Mondays, alongside the CVE scan
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions: read-all
+
+jobs:
+  scorecard:
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write   # upload SARIF
+      id-token: write          # publish results to the public Scorecard API
+      contents: read
+    steps:
+      - name: Harden the runner
+        uses: step-security/harden-runner@ab7a9404c0f3da075243ca237b5fac12c98deaa5  # v2
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Run OpenSSF Scorecard
+        uses: ossf/scorecard-action@4eaacf0543bb3f2c246792bd56e8cdeffafb205a  # v2.4.3
+        with:
+          results_file: scorecard.sarif
+          results_format: sarif
+          publish_results: true
+      - name: Upload Scorecard SARIF to Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: scorecard.sarif
+          category: scorecard
