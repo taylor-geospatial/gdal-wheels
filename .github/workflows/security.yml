@@ -37,7 +37,7 @@ jobs:
         uses: step-security/harden-runner@ab7a9404c0f3da075243ca237b5fac12c98deaa5  # v2
         with:
           egress-policy: audit   # audit now; flip to block + allowlist once reviewed
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Fetch the latest built Linux wheel
         env:
@@ -116,7 +116,7 @@ jobs:
         uses: step-security/harden-runner@ab7a9404c0f3da075243ca237b5fac12c98deaa5  # v2
         with:
           egress-policy: audit
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Run zizmor (workflow security audit)
         env:
           GH_TOKEN: ${{ github.token }}
