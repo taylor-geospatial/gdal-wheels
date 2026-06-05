@@ -288,7 +288,7 @@ jobs:
       # consumers trust the binary's origin regardless of who/what authored the CI.
       - name: Attest wheel build provenance
         if: ${{ github.event_name != 'pull_request' }}
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: ./wheelhouse/*.whl
 
