@@ -268,7 +268,7 @@ jobs:
 
       - name: Upload base wheel artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: wheels-${{ matrix.os }}-${{ matrix.arch }}
           path: ./wheelhouse/*.whl
@@ -277,7 +277,7 @@ jobs:
       # above fails -- lets us pull the exact artifact and debug it natively.
       - name: Upload tools wheel artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: tools-wheels-${{ matrix.os }}-${{ matrix.arch }}
           path: ./tools_wheelhouse/*.whl
